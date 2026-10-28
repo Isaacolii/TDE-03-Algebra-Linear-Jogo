@@ -396,39 +396,39 @@ def draw_goal(surface, camera):
     )
 
 
+# Camada transparente reaproveitada a cada quadro.
+vision_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
+
 def draw_vision(surface, enemy, camera, distance, dot, can_see):
-    # Apenas uma visualização aproximada do campo de visão.
-    # O cálculo matemático real está no método update().
-    radius = min(enemy.vision_distance, 260)
+    # O cone desenhado é a mesma região testada no update():
+    #   ||d|| <= vision_distance  e  forward . u >= cos(40°).
+    # Cada ponto do arco é o vetor forward girado de um ângulo t
+    # entre -40° e +40° e multiplicado pelo raio.
+    center = enemy.pos - camera
+    radius = enemy.vision_distance
+    half = enemy.fov_half_angle
 
-    center = (
-        int(enemy.pos[0] - camera[0]),
-        int(enemy.pos[1] - camera[1])
-    )
+    arc = [
+        center + radius * (rotation_matrix(t) @ enemy.forward)
+        for t in np.linspace(-half, half, 17)
+    ]
+    cone = [tuple(center)] + [tuple(p) for p in arc]
 
-    # Circunferência de detecção.
-    pygame.draw.circle(
-        surface,
-        VISION_COLOR,
-        center,
-        int(radius),
-        1
-    )
+    color = ENEMY_COLOR if can_see else VISION_COLOR
+
+    vision_layer.fill((0, 0, 0, 0))
+    pygame.draw.polygon(vision_layer, (*color, 45), cone)
+
+    # Circunferência ||d|| = vision_distance (condição da norma).
+    pygame.draw.circle(vision_layer, (*VISION_COLOR, 60), tuple(center), radius, 1)
+    surface.blit(vision_layer, (0, 0))
+
+    pygame.draw.polygon(surface, color, cone, 1)
 
     # Direção do inimigo.
-    direction = enemy.forward * radius
-    end = (
-        int(center[0] + direction[0]),
-        int(center[1] + direction[1])
-    )
-
-    pygame.draw.line(
-        surface,
-        VISION_COLOR,
-        center,
-        end,
-        2
-    )
+    end = center + enemy.forward * radius
+    pygame.draw.line(surface, color, tuple(center), tuple(end), 2)
 
 
 def draw_hud(surface, player, enemy, distance, dot, can_see):
@@ -445,6 +445,7 @@ def draw_hud(surface, player, enemy, distance, dot, can_see):
         f"Enemy position  = ({enemy.pos[0]:.1f}, {enemy.pos[1]:.1f})",
         f"distance = {distance:.2f}",
         f"forward . direction_unit = {dot:.3f}",
+        f"angulo = arccos(dot) = {math.degrees(math.acos(max(-1.0, min(1.0, dot)))):.1f} graus (limite 40)",
         f"field of view = {'SIM' if can_see else 'NAO'}",
         "A/D ou setas: mover   |   W/Espaco: pular   |   R: reiniciar",
     ]
