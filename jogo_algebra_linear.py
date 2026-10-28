@@ -255,6 +255,9 @@ class Enemy:
         self.pos = np.array([560.0, 455.0], dtype=float)
         self.velocity = np.array([0.0, 0.0], dtype=float)
         self.max_speed = 115.0
+        self.patrol_speed = 50.0
+        self.patrol_min = 120.0
+        self.patrol_max = 900.0
         self.vision_distance = 420.0
 
         # Campo de visão de 80 graus.
@@ -311,17 +314,29 @@ class Enemy:
             # Atualiza o vetor forward usando rotação.
             self.forward = rotation_matrix(self.angle) @ E1
         else:
-            # Patrulha simples para a esquerda.
-            # O vetor forward precisa corresponder ao sentido da patrulha.
-            self.velocity = np.array([-50.0, 0.0])
+            # Patrulha de ida e volta na horizontal.
+            # Ao perder o jogador, forward é projetado sobre o eixo E1,
+            # proj = (forward . E1) E1, e normalizado: o inimigo segue
+            # para o lado em que estava olhando.
+            horizontal = np.dot(self.forward, E1) * E1
+            if horizontal[0] == 0:
+                horizontal = -E1
+            self.forward = normalize(horizontal)
 
-            self.angle = math.pi
-            self.forward = -E1
+            # No limite da patrulha o sentido inverte: forward vira
+            # (-1) * forward, uma rotação de 180 graus.
+            if ((self.pos[0] <= self.patrol_min and self.forward[0] < 0)
+                    or (self.pos[0] >= self.patrol_max and self.forward[0] > 0)):
+                self.forward = -self.forward
+
+            # O vetor forward precisa corresponder ao sentido da patrulha.
+            self.velocity = self.patrol_speed * self.forward
+            self.angle = math.atan2(self.forward[1], self.forward[0])
 
         self.pos += self.velocity * dt
 
         # Mantém o inimigo em uma região jogável.
-        self.pos[0] = max(120, min(self.pos[0], 900))
+        self.pos[0] = max(self.patrol_min, min(self.pos[0], self.patrol_max))
 
         # Se encostar no jogador, o jogo reinicia.
         if self.rect.colliderect(player.rect):
