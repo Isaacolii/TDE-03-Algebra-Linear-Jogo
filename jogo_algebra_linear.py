@@ -196,6 +196,7 @@ class Player:
         self.jump_speed = -600.0
         self.on_ground = False
         self.collected = set()
+        self.squash = 0.0
 
     @property
     def rect(self):
@@ -237,7 +238,13 @@ class Player:
         # p(t + dt) = p(t) + v * dt
         self.pos += self.velocity * dt
 
+        fall_speed = self.velocity[1]
         self._resolve_collisions()
+
+        # Pouso forte achata o desenho, que volta ao normal aos poucos.
+        if self.on_ground and fall_speed > 300:
+            self.squash = min(0.3, fall_speed / 3000.0)
+        self.squash = max(0.0, self.squash - 1.5 * dt)
 
         # Limites horizontais do mundo.
         self.pos[0] = max(0, min(self.pos[0], WORLD_WIDTH - self.width))
@@ -251,6 +258,15 @@ class Player:
             if (i not in self.collected
                     and np.linalg.norm(self.center - crystal) <= CRYSTAL_RADIUS):
                 self.collected.add(i)
+
+    def scale_factors(self):
+        """
+        Escala não uniforme S = diag(sx, sy) com sx = 1 / sy, então
+        det(S) = sx * sy = 1: o desenho muda de forma mas mantém a área.
+        No ar estica na vertical; ao pousar achata.
+        """
+        sy = 1.0 + min(abs(self.velocity[1]) / 2400.0, 0.2) - self.squash
+        return 1.0 / sy, sy
 
     def _resolve_collisions(self):
         rect = self.rect
@@ -504,10 +520,17 @@ def draw_projectiles(surface, enemy, camera):
 
 
 def draw_player(surface, player, camera):
-    rect = player.rect.copy()
-    rect.x -= int(camera[0])
-    rect.y -= int(camera[1])
-    pygame.draw.rect(surface, PLAYER_COLOR, rect, border_radius=6)
+    # A origem local fica nos pés: a escala estica o retângulo para
+    # cima e os pés continuam no chão. A colisão usa o retângulo
+    # original; a escala é só visual.
+    w, h = player.width, player.height
+    local_points = [(-w / 2, -h), (w / 2, -h), (w / 2, 0), (-w / 2, 0)]
+    feet = player.pos + np.array([w / 2, h])
+    sx, sy = player.scale_factors()
+
+    C = translation_matrix(-camera[0], -camera[1])
+    M = C @ model_matrix(feet, 0.0, sx, sy)
+    pygame.draw.polygon(surface, PLAYER_COLOR, apply_matrix(M, local_points))
 
 
 def draw_platforms(surface, camera):
@@ -588,6 +611,8 @@ def draw_hud(surface, player, enemy, distance, dot, can_see):
     )
     surface.blit(title, (18, 16))
 
+    sx, sy = player.scale_factors()
+
     lines = [
         f"Player position = ({player.pos[0]:.1f}, {player.pos[1]:.1f})",
         f"Player velocity = ({player.velocity[0]:.1f}, {player.velocity[1]:.1f})",
@@ -598,6 +623,7 @@ def draw_hud(surface, player, enemy, distance, dot, can_see):
         f"field of view = {'SIM' if can_see else 'NAO'}",
         f"projeteis = {len(enemy.projectiles)}   (reflexao: v' = (I - 2nn^T) v)",
         f"cristais = {len(player.collected)}/{len(crystals)}   (coleta: ||p - c|| <= {CRYSTAL_RADIUS:.0f})",
+        f"escala do jogador: sx = {sx:.2f}, sy = {sy:.2f}, det = {sx * sy:.2f}",
         "A/D ou setas: mover   |   W/Espaco: pular   |   R: reiniciar",
     ]
 
