@@ -26,6 +26,13 @@ import pygame
 #   - produto interno
 #   - matriz de rotação
 #   - transformação linear
+#
+# Acrescentados nas melhorias:
+#   - coordenadas homogêneas (translação como matriz 3x3)
+#   - composição de transformações (C . T . R . S)
+#   - matriz de escala não uniforme com det = 1
+#   - projeção ortogonal sobre E1
+#   - matriz de reflexão de Householder, H = I - 2 n n^T
 # ============================================================
 
 pygame.init()
@@ -239,7 +246,7 @@ class Player:
         self.pos += self.velocity * dt
 
         fall_speed = self.velocity[1]
-        self._resolve_collisions()
+        self._resolve_collisions(dt)
 
         # Pouso forte achata o desenho, que volta ao normal aos poucos.
         if self.on_ground and fall_speed > 300:
@@ -268,14 +275,16 @@ class Player:
         sy = 1.0 + min(abs(self.velocity[1]) / 2400.0, 0.2) - self.squash
         return 1.0 / sy, sy
 
-    def _resolve_collisions(self):
+    def _resolve_collisions(self, dt):
         rect = self.rect
         self.on_ground = False
 
         # Colisão vertical simplificada.
         for platform in platforms:
             if rect.colliderect(platform):
-                previous_bottom = self.pos[1] + self.height - self.velocity[1] / FPS
+                # Posição anterior = posição atual - v * dt. O original
+                # usava 1 / FPS, que só vale se o jogo rodar a 60 FPS.
+                previous_bottom = self.pos[1] + self.height - self.velocity[1] * dt
 
                 # Pousando sobre a plataforma.
                 if self.velocity[1] >= 0 and previous_bottom <= platform.top + 8:
@@ -657,6 +666,9 @@ def main():
     player = Player()
     enemy = Enemy()
 
+    win_text = ""
+    win_timer = 0.0
+
     running = True
 
     while running:
@@ -681,6 +693,8 @@ def main():
 
         # Vitória.
         if player.rect.colliderect(goal_rect):
+            win_text = f"Vitória! Cristais:{len(player.collected)}/{len(crystals)}"
+            win_timer = 2.5
             player.reset()
             enemy.reset()
 
@@ -707,6 +721,11 @@ def main():
         draw_projectiles(screen, enemy, camera)
         draw_player(screen, player, camera)
         draw_hud(screen, player, enemy, distance, dot, can_see)
+
+        if win_timer > 0:
+            win_timer -= dt
+            text = title_font.render(win_text, True, GOAL_COLOR)
+            screen.blit(text, text.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 60)))
 
         pygame.display.flip()
 
