@@ -82,6 +82,7 @@ ENEMY_COLOR = (235, 80, 90)
 TEXT_COLOR = (235, 240, 245)
 VISION_COLOR = (240, 190, 70)
 GOAL_COLOR = (90, 220, 120)
+PROJECTILE_COLOR = (255, 150, 90)
 
 # ------------------------------------------------------------
 # Funções de Álgebra Linear
@@ -103,6 +104,16 @@ def rotation_matrix(theta):
         [c, -s],
         [s,  c]
     ], dtype=float)
+
+
+def reflection_matrix(n):
+    """
+    Matriz de reflexão de Householder: H = I - 2 n n^T, com n unitário.
+    H v tira de v duas vezes a sua projeção sobre n, o que espelha v
+    em relação à superfície de normal n.
+    """
+    n = normalize(n)
+    return np.eye(2) - 2.0 * np.outer(n, n)
 
 
 def scale_matrix(sx, sy):
@@ -244,6 +255,69 @@ class Player:
 
 
 # ------------------------------------------------------------
+# Projétil do inimigo
+# ------------------------------------------------------------
+
+def collision_normal(pos, radius, rect):
+    """
+    Normal unitária da face do retângulo em que o círculo entrou
+    menos. As normais são vetores da base canônica: -E1, E1, -E2, E2.
+    Retorna a profundidade da penetração e a normal.
+    """
+    penetrations = [
+        (pos[0] + radius - rect.left, -E1),
+        (rect.right - (pos[0] - radius), E1),
+        (pos[1] + radius - rect.top, -E2),
+        (rect.bottom - (pos[1] - radius), E2),
+    ]
+    return min(penetrations, key=lambda item: item[0])
+
+
+class Projectile:
+    RADIUS = 6
+    SPEED = 280.0
+    MAX_BOUNCES = 2
+    LIFETIME = 3.0
+
+    def __init__(self, pos, direction_unit):
+        self.pos = pos.copy()
+        # Velocidade = escalar * vetor unitário.
+        self.velocity = self.SPEED * direction_unit
+        self.bounces = 0
+        self.age = 0.0
+
+    @property
+    def rect(self):
+        r = self.RADIUS
+        return pygame.Rect(int(self.pos[0] - r), int(self.pos[1] - r), 2 * r, 2 * r)
+
+    def update(self, dt):
+        """Move o projétil e retorna False quando ele deve sumir."""
+        self.age += dt
+        self.pos += self.velocity * dt
+
+        for platform in platforms:
+            if self.rect.colliderect(platform):
+                depth, n = collision_normal(self.pos, self.RADIUS, platform)
+
+                # Empurra o projétil para fora ao longo da normal.
+                self.pos += depth * n
+
+                # Só reflete se estiver entrando na superfície (v . n < 0).
+                # |H v| = |v|: a reflexão muda a direção, não a rapidez.
+                if np.dot(self.velocity, n) < 0:
+                    self.velocity = reflection_matrix(n) @ self.velocity
+                    self.bounces += 1
+
+        return (
+            self.bounces <= self.MAX_BOUNCES
+            and self.age < self.LIFETIME
+            and 0 <= self.pos[0] <= WORLD_WIDTH
+            and self.pos[1] <= WORLD_HEIGHT
+        )
+
+
+# ------------------------------------------------------------
 # Classe Inimigo
 # ------------------------------------------------------------
 
@@ -259,6 +333,8 @@ class Enemy:
         self.patrol_min = 120.0
         self.patrol_max = 900.0
         self.vision_distance = 420.0
+        self.projectiles = []
+        self.shot_cooldown = 1.5
 
         # Campo de visão de 80 graus.
         self.fov_half_angle = math.radians(40.0)
@@ -338,8 +414,20 @@ class Enemy:
         # Mantém o inimigo em uma região jogável.
         self.pos[0] = max(self.patrol_min, min(self.pos[0], self.patrol_max))
 
-        # Se encostar no jogador, o jogo reinicia.
-        if self.rect.colliderect(player.rect):
+        # Atira na direção do jogador depois de mirar por um tempo.
+        if can_see_player:
+            self.shot_cooldown -= dt
+        if can_see_player and self.shot_cooldown <= 0:
+            self.projectiles.append(
+                Projectile(self.pos + 24 * direction_unit, direction_unit)
+            )
+            self.shot_cooldown = 2.0
+
+        self.projectiles = [p for p in self.projectiles if p.update(dt)]
+        hit = any(p.rect.colliderect(player.rect) for p in self.projectiles)
+
+        # Se encostar no jogador ou acertar um tiro, o jogo reinicia.
+        if self.rect.colliderect(player.rect) or hit:
             player.reset()
             self.reset()
 
@@ -367,6 +455,15 @@ def draw_enemy(surface, enemy, camera):
     screen_points = apply_matrix(M, local_points)
 
     pygame.draw.polygon(surface, ENEMY_COLOR, screen_points)
+
+
+def draw_projectiles(surface, enemy, camera):
+    for p in enemy.projectiles:
+        center = p.pos - camera
+        # Rastro no sentido oposto ao da velocidade.
+        tail = center - 0.06 * p.velocity
+        pygame.draw.line(surface, PROJECTILE_COLOR, tuple(tail), tuple(center), 3)
+        pygame.draw.circle(surface, PROJECTILE_COLOR, tuple(center), p.RADIUS)
 
 
 def draw_player(surface, player, camera):
@@ -462,6 +559,7 @@ def draw_hud(surface, player, enemy, distance, dot, can_see):
         f"forward . direction_unit = {dot:.3f}",
         f"angulo = arccos(dot) = {math.degrees(math.acos(max(-1.0, min(1.0, dot)))):.1f} graus (limite 40)",
         f"field of view = {'SIM' if can_see else 'NAO'}",
+        f"projeteis = {len(enemy.projectiles)}   (reflexao: v' = (I - 2nn^T) v)",
         "A/D ou setas: mover   |   W/Espaco: pular   |   R: reiniciar",
     ]
 
@@ -541,6 +639,7 @@ def main():
         draw_goal(screen, camera)
         draw_vision(screen, enemy, camera, distance, dot, can_see)
         draw_enemy(screen, enemy, camera)
+        draw_projectiles(screen, enemy, camera)
         draw_player(screen, player, camera)
         draw_hud(screen, player, enemy, distance, dot, can_see)
 
