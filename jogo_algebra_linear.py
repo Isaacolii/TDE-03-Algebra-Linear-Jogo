@@ -105,26 +105,53 @@ def rotation_matrix(theta):
     ], dtype=float)
 
 
-def transform_points(points, position, angle, scale=1.0):
-    """
-    Aplica escala, rotação e translação aos pontos locais.
-    A transformação linear é feita por matrizes; a translação
-    é aplicada depois.
-    """
-    S = np.array([
-        [scale, 0.0],
-        [0.0, scale]
-    ])
+def scale_matrix(sx, sy):
+    """Matriz de escala 2D (diagonal). det = sx * sy."""
+    return np.array([
+        [sx, 0.0],
+        [0.0, sy]
+    ], dtype=float)
 
-    R = rotation_matrix(angle)
-    A = R @ S
 
-    result = []
-    for point in points:
-        p = np.array(point, dtype=float)
-        world = A @ p + position
-        result.append(tuple(world))
-    return result
+def translation_matrix(tx, ty):
+    """
+    Translação em coordenadas homogêneas.
+    Em R^2 a translação não é linear (leva a origem para (tx, ty)),
+    mas em R^3, com o ponto escrito como (x, y, 1), ela vira uma
+    multiplicação de matriz.
+    """
+    return np.array([
+        [1.0, 0.0, tx],
+        [0.0, 1.0, ty],
+        [0.0, 0.0, 1.0]
+    ], dtype=float)
+
+
+def to_homogeneous(A):
+    """Coloca uma matriz 2x2 no canto de uma matriz 3x3."""
+    H = np.eye(3)
+    H[:2, :2] = A
+    return H
+
+
+def model_matrix(position, angle=0.0, sx=1.0, sy=1.0):
+    """
+    M = T(position) . R(angle) . S(sx, sy)
+    Lida da direita para a esquerda: primeiro escala, depois
+    rotaciona e por último translada.
+    """
+    A = rotation_matrix(angle) @ scale_matrix(sx, sy)
+    return translation_matrix(position[0], position[1]) @ to_homogeneous(A)
+
+
+def apply_matrix(M, points):
+    """
+    Aplica a matriz 3x3 M a uma lista de pontos 2D de uma vez:
+    os pontos viram as colunas de uma matriz 3 x n.
+    """
+    P = np.vstack([np.array(points, dtype=float).T, np.ones(len(points))])
+    Q = M @ P
+    return [tuple(q) for q in Q[:2].T]
 
 
 # ------------------------------------------------------------
@@ -308,7 +335,7 @@ class Enemy:
 # Desenho do inimigo usando transformação matricial
 # ------------------------------------------------------------
 
-def draw_enemy(surface, enemy, camera_x):
+def draw_enemy(surface, enemy, camera):
     # Triângulo no sistema de coordenadas local.
     local_points = [
         (28, 0),
@@ -316,39 +343,36 @@ def draw_enemy(surface, enemy, camera_x):
         (-18, 16)
     ]
 
-    # Transformação:
-    # p_world = R(theta) S p_local + position
-    world_points = transform_points(
-        local_points,
-        enemy.pos,
-        enemy.angle,
-        scale=1.0
-    )
+    # Transformação em coordenadas homogêneas:
+    # p_tela = C . T(position) . R(theta) . S . p_local
+    # C é a translação da câmera, -camera.
+    C = translation_matrix(-camera[0], -camera[1])
+    M = C @ model_matrix(enemy.pos, enemy.angle)
 
-    screen_points = [
-        (int(x - camera_x), int(y))
-        for x, y in world_points
-    ]
+    screen_points = apply_matrix(M, local_points)
 
     pygame.draw.polygon(surface, ENEMY_COLOR, screen_points)
 
 
-def draw_player(surface, player, camera_x):
+def draw_player(surface, player, camera):
     rect = player.rect.copy()
-    rect.x -= int(camera_x)
+    rect.x -= int(camera[0])
+    rect.y -= int(camera[1])
     pygame.draw.rect(surface, PLAYER_COLOR, rect, border_radius=6)
 
 
-def draw_platforms(surface, camera_x):
+def draw_platforms(surface, camera):
     for platform in platforms:
         rect = platform.copy()
-        rect.x -= int(camera_x)
+        rect.x -= int(camera[0])
+        rect.y -= int(camera[1])
         pygame.draw.rect(surface, PLATFORM_COLOR, rect, border_radius=4)
 
 
-def draw_goal(surface, camera_x):
+def draw_goal(surface, camera):
     rect = goal_rect.copy()
-    rect.x -= int(camera_x)
+    rect.x -= int(camera[0])
+    rect.y -= int(camera[1])
 
     pygame.draw.rect(surface, GOAL_COLOR, rect)
 
@@ -372,14 +396,14 @@ def draw_goal(surface, camera_x):
     )
 
 
-def draw_vision(surface, enemy, camera_x, distance, dot, can_see):
+def draw_vision(surface, enemy, camera, distance, dot, can_see):
     # Apenas uma visualização aproximada do campo de visão.
     # O cálculo matemático real está no método update().
     radius = min(enemy.vision_distance, 260)
 
     center = (
-        int(enemy.pos[0] - camera_x),
-        int(enemy.pos[1])
+        int(enemy.pos[0] - camera[0]),
+        int(enemy.pos[1] - camera[1])
     )
 
     # Circunferência de detecção.
@@ -432,17 +456,18 @@ def draw_hud(surface, player, enemy, distance, dot, can_see):
         y += 23
 
 
-def draw_background(surface, camera_x):
+def draw_background(surface, camera):
     surface.fill(BG)
 
     # Grade para reforçar a interpretação das posições como vetores.
     grid_size = 50
-    start_x = -(int(camera_x) % grid_size)
+    start_x = -(int(camera[0]) % grid_size)
+    start_y = -(int(camera[1]) % grid_size)
 
     for x in range(start_x, WIDTH, grid_size):
         pygame.draw.line(surface, (38, 44, 58), (x, 0), (x, HEIGHT), 1)
 
-    for y in range(0, HEIGHT, grid_size):
+    for y in range(start_y, HEIGHT, grid_size):
         pygame.draw.line(surface, (38, 44, 58), (0, y), (WIDTH, y), 1)
 
 
@@ -485,13 +510,22 @@ def main():
         camera_x = player.pos[0] - WIDTH * 0.35
         camera_x = max(0, min(camera_x, WORLD_WIDTH - WIDTH))
 
+        # Na vertical a câmera só desce quando os pés do jogador passam
+        # de HEIGHT - 50. Sem isso, as plataformas em y = 650 e y = 700
+        # ficavam abaixo da tela (HEIGHT = 600) e nunca apareciam.
+        camera_y = player.pos[1] + player.height - (HEIGHT - 50)
+        camera_y = max(0, min(camera_y, WORLD_HEIGHT - HEIGHT))
+
+        # A câmera é um vetor de R^2.
+        camera = np.array([camera_x, camera_y])
+
         # Desenho.
-        draw_background(screen, camera_x)
-        draw_platforms(screen, camera_x)
-        draw_goal(screen, camera_x)
-        draw_vision(screen, enemy, camera_x, distance, dot, can_see)
-        draw_enemy(screen, enemy, camera_x)
-        draw_player(screen, player, camera_x)
+        draw_background(screen, camera)
+        draw_platforms(screen, camera)
+        draw_goal(screen, camera)
+        draw_vision(screen, enemy, camera, distance, dot, can_see)
+        draw_enemy(screen, enemy, camera)
+        draw_player(screen, player, camera)
         draw_hud(screen, player, enemy, distance, dot, can_see)
 
         pygame.display.flip()
