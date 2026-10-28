@@ -71,6 +71,19 @@ platforms = [
 
 goal_rect = pygame.Rect(2320, 440, 30, 80)
 
+# Cristais coletáveis: o centro de cada um é um vetor de R^2.
+crystals = [
+    np.array([420.0, 500.0]),
+    np.array([910.0, 430.0]),
+    np.array([1250.0, 350.0]),
+    np.array([1600.0, 460.0]),
+    np.array([1920.0, 370.0]),
+    np.array([2200.0, 480.0]),
+]
+
+# O jogador pega o cristal quando ||centro - cristal|| <= raio.
+CRYSTAL_RADIUS = 30.0
+
 # ------------------------------------------------------------
 # Cores
 # ------------------------------------------------------------
@@ -83,6 +96,7 @@ TEXT_COLOR = (235, 240, 245)
 VISION_COLOR = (240, 190, 70)
 GOAL_COLOR = (90, 220, 120)
 PROJECTILE_COLOR = (255, 150, 90)
+CRYSTAL_COLOR = (170, 120, 255)
 
 # ------------------------------------------------------------
 # Funções de Álgebra Linear
@@ -181,6 +195,7 @@ class Player:
         self.speed = 260.0
         self.jump_speed = -600.0
         self.on_ground = False
+        self.collected = set()
 
     @property
     def rect(self):
@@ -230,6 +245,12 @@ class Player:
         # Queda fora do mundo.
         if self.pos[1] > WORLD_HEIGHT:
             self.reset()
+
+        # Coleta por distância: norma do vetor centro -> cristal.
+        for i, crystal in enumerate(crystals):
+            if (i not in self.collected
+                    and np.linalg.norm(self.center - crystal) <= CRYSTAL_RADIUS):
+                self.collected.add(i)
 
     def _resolve_collisions(self):
         rect = self.rect
@@ -457,6 +478,22 @@ def draw_enemy(surface, enemy, camera):
     pygame.draw.polygon(surface, ENEMY_COLOR, screen_points)
 
 
+def draw_crystals(surface, player, camera):
+    # Losango no sistema local, girando e pulsando com o tempo:
+    # p_tela = C . T(centro) . R(t) . S(s, s) . p_local
+    local_points = [(0, -12), (9, 0), (0, 12), (-9, 0)]
+    t = pygame.time.get_ticks() / 1000.0
+    angle = 2.0 * t
+    s = 1.0 + 0.15 * math.sin(3.0 * t)
+
+    C = translation_matrix(-camera[0], -camera[1])
+    for i, crystal in enumerate(crystals):
+        if i in player.collected:
+            continue
+        M = C @ model_matrix(crystal, angle, s, s)
+        pygame.draw.polygon(surface, CRYSTAL_COLOR, apply_matrix(M, local_points))
+
+
 def draw_projectiles(surface, enemy, camera):
     for p in enemy.projectiles:
         center = p.pos - camera
@@ -560,6 +597,7 @@ def draw_hud(surface, player, enemy, distance, dot, can_see):
         f"angulo = arccos(dot) = {math.degrees(math.acos(max(-1.0, min(1.0, dot)))):.1f} graus (limite 40)",
         f"field of view = {'SIM' if can_see else 'NAO'}",
         f"projeteis = {len(enemy.projectiles)}   (reflexao: v' = (I - 2nn^T) v)",
+        f"cristais = {len(player.collected)}/{len(crystals)}   (coleta: ||p - c|| <= {CRYSTAL_RADIUS:.0f})",
         "A/D ou setas: mover   |   W/Espaco: pular   |   R: reiniciar",
     ]
 
@@ -637,6 +675,7 @@ def main():
         draw_background(screen, camera)
         draw_platforms(screen, camera)
         draw_goal(screen, camera)
+        draw_crystals(screen, player, camera)
         draw_vision(screen, enemy, camera, distance, dot, can_see)
         draw_enemy(screen, enemy, camera)
         draw_projectiles(screen, enemy, camera)
